@@ -5,7 +5,7 @@
     <!-- LEFT PANE HEADER ACTIONS -->
     <div class="JobResults-panelHeaderButtonActions">
         <!-- RELAUNCH ACTION -->
-        <at-relaunch job="vm.job"></at-relaunch>
+        <at-relaunch ng-if="vm.job" job="vm.job"></at-relaunch>
 
         <!-- CANCEL ACTION -->
         <button
@@ -216,6 +216,18 @@
             {{ vm.project.value }}
         </a>
     </div>
+</div>
+
+<!-- BRANCH DETAIL -->
+<div class="JobResults-resultRow" ng-if="vm.scmBranch">
+    <label class="JobResults-resultRowLabel">{{ vm.scmBranch.label }}</label>
+    <div class="JobResults-resultRowText">{{ vm.scmBranch.value }}</div>
+</div>
+
+<!-- REFSPEC DETAIL -->
+<div class="JobResults-resultRow" ng-if="vm.scmRefspec">
+    <label class="JobResults-resultRowLabel">{{ vm.scmRefspec.label }}</label>
+    <div class="JobResults-resultRowText">{{ vm.scmRefspec.value }}</div>
 </div>
 
 <!-- INVENTORY SCM DETAIL -->

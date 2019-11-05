@@ -42,10 +42,6 @@ def test_inventory_source_notification_on_cloud_only(get, post, inventory_source
 
     not_is = inventory_source_factory("not_ec2")
 
-    url = reverse('api:inventory_source_notification_templates_any_list', kwargs={'pk': cloud_is.id})
-    response = post(url, dict(id=notification_template.id), u)
-    assert response.status_code == 204
-
     url = reverse('api:inventory_source_notification_templates_success_list', kwargs={'pk': not_is.id})
     response = post(url, dict(id=notification_template.id), u)
     assert response.status_code == 400
@@ -604,7 +600,7 @@ class TestControlledBySCM:
         assert scm_inventory.inventory_sources.count() == 0
 
     def test_adding_inv_src_ok(self, post, scm_inventory, admin_user):
-        post(reverse('api:inventory_inventory_sources_list', kwargs={'version': 'v2', 'pk': scm_inventory.id}),
+        post(reverse('api:inventory_inventory_sources_list', kwargs={'pk': scm_inventory.id}),
              {'name': 'new inv src', 'update_on_project_update': False, 'source': 'scm', 'overwrite_vars': True},
              admin_user, expect=201)
 
@@ -615,7 +611,7 @@ class TestControlledBySCM:
 
     def test_two_update_on_project_update_inv_src_prohibited(self, patch, scm_inventory, factory_scm_inventory, project, admin_user):
         scm_inventory2 = factory_scm_inventory(name="scm_inventory2")
-        res = patch(reverse('api:inventory_source_detail', kwargs={'version': 'v2', 'pk': scm_inventory2.id}),
+        res = patch(reverse('api:inventory_source_detail', kwargs={'pk': scm_inventory2.id}),
                     {'update_on_project_update': True,},
                     admin_user, expect=400)
         content = json.loads(res.content)

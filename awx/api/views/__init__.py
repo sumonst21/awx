@@ -91,7 +91,8 @@ from awx.main.redact import UriCleaner
 from awx.api.permissions import (
     JobTemplateCallbackPermission, TaskPermission, ProjectUpdatePermission,
     InventoryInventorySourcesUpdatePermission, UserPermission,
-    InstanceGroupTowerPermission, VariableDataPermission
+    InstanceGroupTowerPermission, VariableDataPermission,
+    WorkflowApprovalPermission
 )
 from awx.api import renderers
 from awx.api import serializers
@@ -101,7 +102,7 @@ from awx.main.scheduler.dag_workflow import WorkflowDAG
 from awx.api.views.mixin import (
     ControlledByScmMixin, InstanceGroupMembershipMixin,
     OrganizationCountsMixin, RelatedJobsPreventDeleteMixin,
-    UnifiedJobDeletionMixin,
+    UnifiedJobDeletionMixin, NoTruncateMixin,
 )
 from awx.api.views.organization import ( # noqa
     OrganizationList,
@@ -116,7 +117,9 @@ from awx.api.views.organization import ( # noqa
     OrganizationNotificationTemplatesList,
     OrganizationNotificationTemplatesAnyList,
     OrganizationNotificationTemplatesErrorList,
+    OrganizationNotificationTemplatesStartedList,
     OrganizationNotificationTemplatesSuccessList,
+    OrganizationNotificationTemplatesApprovalList,
     OrganizationInstanceGroupsList,
     OrganizationAccessList,
     OrganizationObjectRolesList,
@@ -145,6 +148,12 @@ from awx.api.views.root import ( # noqa
     ApiV2RootView,
     ApiV2PingView,
     ApiV2ConfigView,
+    ApiV2SubscriptionView,
+)
+from awx.api.views.webhooks import ( # noqa
+    WebhookKeyView,
+    GithubWebhookReceiver,
+    GitlabWebhookReceiver,
 )
 
 
@@ -242,13 +251,6 @@ class DashboardView(APIView):
                                    'failures_url': reverse('api:project_list', request=request) + "?scm_type=hg&last_job_failed=True",
                                    'total': hg_projects.count(),
                                    'failed': hg_failed_projects.count()}
-
-        user_jobs = get_user_queryset(request.user, models.Job)
-        user_failed_jobs = user_jobs.filter(failed=True)
-        data['jobs'] = {'url': reverse('api:job_list', request=request),
-                        'failure_url': reverse('api:job_list', request=request) + "?failed=True",
-                        'total': user_jobs.count(),
-                        'failed': user_failed_jobs.count()}
 
         user_list = get_user_queryset(request.user, models.User)
         team_list = get_user_queryset(request.user, models.Team)
@@ -380,6 +382,13 @@ class InstanceGroupDetail(RelatedJobsPreventDeleteMixin, RetrieveUpdateDestroyAP
     model = models.InstanceGroup
     serializer_class = serializers.InstanceGroupSerializer
     permission_classes = (InstanceGroupTowerPermission,)
+
+    def update_raw_data(self, data):
+        if self.get_object().is_containerized:
+            data.pop('policy_instance_percentage', None)
+            data.pop('policy_instance_minimum', None)
+            data.pop('policy_instance_list', None)
+        return super(InstanceGroupDetail, self).update_raw_data(data)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -566,6 +575,7 @@ class TeamUsersList(BaseUsersList):
     serializer_class = serializers.UserSerializer
     parent_model = models.Team
     relationship = 'member_role.members'
+    ordering = ('username',)
 
 
 class TeamRolesList(SubListAttachDetachAPIView):
@@ -747,22 +757,20 @@ class ProjectNotificationTemplatesAnyList(SubListCreateAttachDetachAPIView):
     model = models.NotificationTemplate
     serializer_class = serializers.NotificationTemplateSerializer
     parent_model = models.Project
-    relationship = 'notification_templates_any'
 
 
-class ProjectNotificationTemplatesErrorList(SubListCreateAttachDetachAPIView):
+class ProjectNotificationTemplatesStartedList(ProjectNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.Project
+    relationship = 'notification_templates_started'
+
+
+class ProjectNotificationTemplatesErrorList(ProjectNotificationTemplatesAnyList):
+
     relationship = 'notification_templates_error'
 
 
-class ProjectNotificationTemplatesSuccessList(SubListCreateAttachDetachAPIView):
+class ProjectNotificationTemplatesSuccessList(ProjectNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.Project
     relationship = 'notification_templates_success'
 
 
@@ -840,8 +848,6 @@ class SystemJobEventsList(SubListAPIView):
         return super(SystemJobEventsList, self).finalize_response(request, response, *args, **kwargs)
 
 
-
-
 class ProjectUpdateCancel(RetrieveAPIView):
 
     model = models.ProjectUpdate
@@ -906,6 +912,7 @@ class UserList(ListCreateAPIView):
     model = models.User
     serializer_class = serializers.UserSerializer
     permission_classes = (UserPermission,)
+    ordering = ('username',)
 
 
 class UserMeList(ListAPIView):
@@ -913,6 +920,7 @@ class UserMeList(ListAPIView):
     model = models.User
     serializer_class = serializers.UserSerializer
     name = _('Me')
+    ordering = ('username',)
 
     def get_queryset(self):
         return self.model.objects.filter(pk=self.request.user.pk)
@@ -1256,6 +1264,7 @@ class CredentialOwnerUsersList(SubListAPIView):
     serializer_class = serializers.UserSerializer
     parent_model = models.Credential
     relationship = 'admin_role.members'
+    ordering = ('username',)
 
 
 class CredentialOwnerTeamsList(SubListAPIView):
@@ -2102,7 +2111,6 @@ class InventorySourceNotificationTemplatesAnyList(SubListCreateAttachDetachAPIVi
     model = models.NotificationTemplate
     serializer_class = serializers.NotificationTemplateSerializer
     parent_model = models.InventorySource
-    relationship = 'notification_templates_any'
 
     def post(self, request, *args, **kwargs):
         parent = self.get_parent_object()
@@ -2111,6 +2119,11 @@ class InventorySourceNotificationTemplatesAnyList(SubListCreateAttachDetachAPIVi
                                  .format(models.CLOUD_INVENTORY_SOURCES, parent.source)),
                             status=status.HTTP_400_BAD_REQUEST)
         return super(InventorySourceNotificationTemplatesAnyList, self).post(request, *args, **kwargs)
+
+
+class InventorySourceNotificationTemplatesStartedList(InventorySourceNotificationTemplatesAnyList):
+
+    relationship = 'notification_templates_started'
 
 
 class InventorySourceNotificationTemplatesErrorList(InventorySourceNotificationTemplatesAnyList):
@@ -2134,12 +2147,21 @@ class InventorySourceHostsList(HostRelatedSearchMixin, SubListDestroyAPIView):
     def perform_list_destroy(self, instance_list):
         inv_source = self.get_parent_object()
         with ignore_inventory_computed_fields():
-            # Activity stream doesn't record disassociation here anyway
-            # no signals-related reason to not bulk-delete
-            models.Host.groups.through.objects.filter(
-                host__inventory_sources=inv_source
-            ).delete()
-            r = super(InventorySourceHostsList, self).perform_list_destroy(instance_list)
+            if not settings.ACTIVITY_STREAM_ENABLED_FOR_INVENTORY_SYNC:
+                from awx.main.signals import disable_activity_stream
+                with disable_activity_stream():
+                    # job host summary deletion necessary to avoid deadlock
+                    models.JobHostSummary.objects.filter(host__inventory_sources=inv_source).update(host=None)
+                    models.Host.objects.filter(inventory_sources=inv_source).delete()
+                    r = super(InventorySourceHostsList, self).perform_list_destroy([])
+            else:
+                # Advance delete of group-host memberships to prevent deadlock
+                # Activity stream doesn't record disassociation here anyway
+                # no signals-related reason to not bulk-delete
+                models.Host.groups.through.objects.filter(
+                    host__inventory_sources=inv_source
+                ).delete()
+                r = super(InventorySourceHostsList, self).perform_list_destroy(instance_list)
         update_inventory_computed_fields.delay(inv_source.inventory_id, True)
         return r
 
@@ -2155,11 +2177,18 @@ class InventorySourceGroupsList(SubListDestroyAPIView):
     def perform_list_destroy(self, instance_list):
         inv_source = self.get_parent_object()
         with ignore_inventory_computed_fields():
-            # Same arguments for bulk delete as with host list
-            models.Group.hosts.through.objects.filter(
-                group__inventory_sources=inv_source
-            ).delete()
-            r = super(InventorySourceGroupsList, self).perform_list_destroy(instance_list)
+            if not settings.ACTIVITY_STREAM_ENABLED_FOR_INVENTORY_SYNC:
+                from awx.main.signals import disable_activity_stream
+                with disable_activity_stream():
+                    models.Group.objects.filter(inventory_sources=inv_source).delete()
+                    r = super(InventorySourceGroupsList, self).perform_list_destroy([])
+            else:
+                # Advance delete of group-host memberships to prevent deadlock
+                # Same arguments for bulk delete as with host list
+                models.Group.hosts.through.objects.filter(
+                    group__inventory_sources=inv_source
+                ).delete()
+                r = super(InventorySourceGroupsList, self).perform_list_destroy(instance_list)
         update_inventory_computed_fields.delay(inv_source.inventory_id, True)
         return r
 
@@ -2566,10 +2595,34 @@ class JobTemplateSurveySpec(GenericAPIView):
                         return Response(dict(error=_(
                             "The {min_or_max} limit in survey question {idx} expected to be integer."
                         ).format(min_or_max=key, **context)))
-            if qtype in ['multiplechoice', 'multiselect'] and 'choices' not in survey_item:
-                return Response(dict(error=_(
-                    "Survey question {idx} of type {survey_item[type]} must specify choices.".format(**context)
-                )))
+            # if it's a multiselect or multiple choice, it must have coices listed
+            # choices and defualts must come in as strings seperated by /n characters.
+            if qtype == 'multiselect' or qtype == 'multiplechoice':
+                if 'choices' in survey_item:
+                    if isinstance(survey_item['choices'], str):
+                        survey_item['choices'] = '\n'.join(choice for choice in survey_item['choices'].splitlines() if choice.strip() != '')
+                else:
+                    return Response(dict(error=_(
+                        "Survey question {idx} of type {survey_item[type]} must specify choices.".format(**context)
+                    )))
+                # If there is a default string split it out removing extra /n characters.
+                # Note: There can still be extra newline characters added in the API, these are sanitized out using .strip()
+                if 'default' in survey_item:
+                    if isinstance(survey_item['default'], str):
+                        survey_item['default'] = '\n'.join(choice for choice in survey_item['default'].splitlines() if choice.strip() != '')
+                        list_of_defaults = survey_item['default'].splitlines()
+                    else:
+                        list_of_defaults = survey_item['default']
+                    if qtype == 'multiplechoice':
+                        # Multiplechoice types should only have 1 default.
+                        if len(list_of_defaults) > 1:
+                            return Response(dict(error=_(
+                                "Multiple Choice (Single Select) can only have one default value.".format(**context)
+                            )))
+                    if any(item not in survey_item['choices'] for item in list_of_defaults):
+                        return Response(dict(error=_(
+                            "Default choice must be answered from the choices listed.".format(**context)
+                        )))
 
             # Process encryption substitution
             if ("default" in survey_item and isinstance(survey_item['default'], str) and
@@ -2626,22 +2679,20 @@ class JobTemplateNotificationTemplatesAnyList(SubListCreateAttachDetachAPIView):
     model = models.NotificationTemplate
     serializer_class = serializers.NotificationTemplateSerializer
     parent_model = models.JobTemplate
-    relationship = 'notification_templates_any'
 
 
-class JobTemplateNotificationTemplatesErrorList(SubListCreateAttachDetachAPIView):
+class JobTemplateNotificationTemplatesStartedList(JobTemplateNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.JobTemplate
+    relationship = 'notification_templates_started'
+
+
+class JobTemplateNotificationTemplatesErrorList(JobTemplateNotificationTemplatesAnyList):
+
     relationship = 'notification_templates_error'
 
 
-class JobTemplateNotificationTemplatesSuccessList(SubListCreateAttachDetachAPIView):
+class JobTemplateNotificationTemplatesSuccessList(JobTemplateNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.JobTemplate
     relationship = 'notification_templates_success'
 
 
@@ -2996,7 +3047,7 @@ class WorkflowJobTemplateNodeChildrenBaseList(EnforceParentRelationshipMixin, Su
         relationships = ['success_nodes', 'failure_nodes', 'always_nodes']
         relationships.remove(self.relationship)
         qs = functools.reduce(lambda x, y: (x | y),
-                              (Q(**{'{}__in'.format(rel): [sub.id]}) for rel in relationships))
+                              (Q(**{'{}__in'.format(r): [sub.id]}) for r in relationships))
 
         if models.WorkflowJobTemplateNode.objects.filter(Q(pk=parent.id) & qs).exists():
             return {"Error": _("Relationship not allowed.")}
@@ -3010,6 +3061,34 @@ class WorkflowJobTemplateNodeChildrenBaseList(EnforceParentRelationshipMixin, Su
             return {"Error": _("Cycle detected.")}
         parent_node_type_relationship.remove(sub)
         return None
+
+
+class WorkflowJobTemplateNodeCreateApproval(RetrieveAPIView):
+
+    model = models.WorkflowJobTemplateNode
+    serializer_class = serializers.WorkflowJobTemplateNodeCreateApprovalSerializer
+    permission_classes = []
+
+    def post(self, request, *args, **kwargs):
+        obj = self.get_object()
+        serializer = self.get_serializer(instance=obj, data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        approval_template = obj.create_approval_template(**serializer.validated_data)
+        data = serializers.WorkflowApprovalTemplateSerializer(
+            approval_template,
+            context=self.get_serializer_context()
+        ).data
+        return Response(data, status=status.HTTP_200_OK)
+
+    def check_permissions(self, request):
+        obj = self.get_object().workflow_job_template
+        if request.method == 'POST':
+            if not request.user.can_access(models.WorkflowJobTemplate, 'change', obj, request.data):
+                self.permission_denied(request)
+        else:
+            if not request.user.can_access(models.WorkflowJobTemplate, 'read', obj):
+                self.permission_denied(request)
 
 
 class WorkflowJobTemplateNodeSuccessNodesList(WorkflowJobTemplateNodeChildrenBaseList):
@@ -3089,6 +3168,17 @@ class WorkflowJobTemplateCopy(CopyAPIView):
             data.update(messages)
         return Response(data)
 
+    def _build_create_dict(self, obj):
+        """Special processing of fields managed by char_prompts
+        """
+        r = super(WorkflowJobTemplateCopy, self)._build_create_dict(obj)
+        field_names = set(f.name for f in obj._meta.get_fields())
+        for field_name, ask_field_name in obj.get_ask_mapping().items():
+            if field_name in r and field_name not in field_names:
+                r.setdefault('char_prompts', {})
+                r['char_prompts'][field_name] = r.pop(field_name)
+        return r
+
     @staticmethod
     def deep_copy_permission_check_func(user, new_objs):
         for obj in new_objs:
@@ -3117,7 +3207,6 @@ class WorkflowJobTemplateLabelList(JobTemplateLabelList):
 
 class WorkflowJobTemplateLaunch(RetrieveAPIView):
 
-
     model = models.WorkflowJobTemplate
     obj_permission_type = 'start'
     serializer_class = serializers.WorkflowJobLaunchSerializer
@@ -3134,10 +3223,15 @@ class WorkflowJobTemplateLaunch(RetrieveAPIView):
                 extra_vars.setdefault(v, u'')
             if extra_vars:
                 data['extra_vars'] = extra_vars
-            if obj.ask_inventory_on_launch:
-                data['inventory'] = obj.inventory_id
-            else:
-                data.pop('inventory', None)
+            modified_ask_mapping = models.WorkflowJobTemplate.get_ask_mapping()
+            modified_ask_mapping.pop('extra_vars')
+            for field_name, ask_field_name in obj.get_ask_mapping().items():
+                if not getattr(obj, ask_field_name):
+                    data.pop(field_name, None)
+                elif field_name == 'inventory':
+                    data[field_name] = getattrd(obj, "%s.%s" % (field_name, 'id'), None)
+                else:
+                    data[field_name] = getattr(obj, field_name)
         return data
 
     def post(self, request, *args, **kwargs):
@@ -3234,23 +3328,26 @@ class WorkflowJobTemplateNotificationTemplatesAnyList(SubListCreateAttachDetachA
     model = models.NotificationTemplate
     serializer_class = serializers.NotificationTemplateSerializer
     parent_model = models.WorkflowJobTemplate
-    relationship = 'notification_templates_any'
 
 
-class WorkflowJobTemplateNotificationTemplatesErrorList(SubListCreateAttachDetachAPIView):
+class WorkflowJobTemplateNotificationTemplatesStartedList(WorkflowJobTemplateNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.WorkflowJobTemplate
+    relationship = 'notification_templates_started'
+
+
+class WorkflowJobTemplateNotificationTemplatesErrorList(WorkflowJobTemplateNotificationTemplatesAnyList):
+
     relationship = 'notification_templates_error'
 
 
-class WorkflowJobTemplateNotificationTemplatesSuccessList(SubListCreateAttachDetachAPIView):
+class WorkflowJobTemplateNotificationTemplatesSuccessList(WorkflowJobTemplateNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.WorkflowJobTemplate
     relationship = 'notification_templates_success'
+
+
+class WorkflowJobTemplateNotificationTemplatesApprovalList(WorkflowJobTemplateNotificationTemplatesAnyList):
+
+    relationship = 'notification_templates_approvals'
 
 
 class WorkflowJobTemplateAccessList(ResourceAccessList):
@@ -3288,7 +3385,7 @@ class WorkflowJobTemplateActivityStreamList(SubListAPIView):
                          Q(workflow_job_template_node__workflow_job_template=parent)).distinct()
 
 
-class WorkflowJobList(ListCreateAPIView):
+class WorkflowJobList(ListAPIView):
 
     model = models.WorkflowJob
     serializer_class = serializers.WorkflowJobListSerializer
@@ -3337,6 +3434,11 @@ class WorkflowJobNotificationsList(SubListAPIView):
     parent_model = models.WorkflowJob
     relationship = 'notifications'
     search_fields = ('subject', 'notification_type', 'body',)
+
+    def get_sublist_queryset(self, parent):
+        return self.model.objects.filter(Q(unifiedjob_notifications=parent) |
+                                         Q(unifiedjob_notifications__unified_job_node__workflow_job=parent,
+                                         unifiedjob_notifications__workflowapproval__isnull=False)).distinct()
 
 
 class WorkflowJobActivityStreamList(SubListAPIView):
@@ -3411,22 +3513,20 @@ class SystemJobTemplateNotificationTemplatesAnyList(SubListCreateAttachDetachAPI
     model = models.NotificationTemplate
     serializer_class = serializers.NotificationTemplateSerializer
     parent_model = models.SystemJobTemplate
-    relationship = 'notification_templates_any'
 
 
-class SystemJobTemplateNotificationTemplatesErrorList(SubListCreateAttachDetachAPIView):
+class SystemJobTemplateNotificationTemplatesStartedList(SystemJobTemplateNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.SystemJobTemplate
+    relationship = 'notification_templates_started'
+
+
+class SystemJobTemplateNotificationTemplatesErrorList(SystemJobTemplateNotificationTemplatesAnyList):
+
     relationship = 'notification_templates_error'
 
 
-class SystemJobTemplateNotificationTemplatesSuccessList(SubListCreateAttachDetachAPIView):
+class SystemJobTemplateNotificationTemplatesSuccessList(SystemJobTemplateNotificationTemplatesAnyList):
 
-    model = models.NotificationTemplate
-    serializer_class = serializers.NotificationTemplateSerializer
-    parent_model = models.SystemJobTemplate
     relationship = 'notification_templates_success'
 
 
@@ -3689,7 +3789,7 @@ class JobHostSummaryDetail(RetrieveAPIView):
     serializer_class = serializers.JobHostSummarySerializer
 
 
-class JobEventList(ListAPIView):
+class JobEventList(NoTruncateMixin, ListAPIView):
 
     model = models.JobEvent
     serializer_class = serializers.JobEventSerializer
@@ -3701,8 +3801,13 @@ class JobEventDetail(RetrieveAPIView):
     model = models.JobEvent
     serializer_class = serializers.JobEventSerializer
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context.update(no_truncate=True)
+        return context
 
-class JobEventChildrenList(SubListAPIView):
+
+class JobEventChildrenList(NoTruncateMixin, SubListAPIView):
 
     model = models.JobEvent
     serializer_class = serializers.JobEventSerializer
@@ -3727,7 +3832,7 @@ class JobEventHostsList(HostRelatedSearchMixin, SubListAPIView):
     name = _('Job Event Hosts List')
 
 
-class BaseJobEventsList(SubListAPIView):
+class BaseJobEventsList(NoTruncateMixin, SubListAPIView):
 
     model = models.JobEvent
     serializer_class = serializers.JobEventSerializer
@@ -3923,7 +4028,7 @@ class AdHocCommandRelaunch(GenericAPIView):
             return Response(data, status=status.HTTP_201_CREATED, headers=headers)
 
 
-class AdHocCommandEventList(ListAPIView):
+class AdHocCommandEventList(NoTruncateMixin, ListAPIView):
 
     model = models.AdHocCommandEvent
     serializer_class = serializers.AdHocCommandEventSerializer
@@ -3935,8 +4040,13 @@ class AdHocCommandEventDetail(RetrieveAPIView):
     model = models.AdHocCommandEvent
     serializer_class = serializers.AdHocCommandEventSerializer
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context.update(no_truncate=True)
+        return context
 
-class BaseAdHocCommandEventsList(SubListAPIView):
+
+class BaseAdHocCommandEventsList(NoTruncateMixin, SubListAPIView):
 
     model = models.AdHocCommandEvent
     serializer_class = serializers.AdHocCommandEventSerializer
@@ -3978,7 +4088,7 @@ class AdHocCommandNotificationsList(SubListAPIView):
     search_fields = ('subject', 'notification_type', 'body',)
 
 
-class SystemJobList(ListCreateAPIView):
+class SystemJobList(ListAPIView):
 
     model = models.SystemJob
     serializer_class = serializers.SystemJobListSerializer
@@ -4202,8 +4312,15 @@ class NotificationTemplateTest(GenericAPIView):
 
     def post(self, request, *args, **kwargs):
         obj = self.get_object()
-        notification = obj.generate_notification("Tower Notification Test {} {}".format(obj.id, settings.TOWER_URL_BASE),
-                                                 {"body": "Ansible Tower Test Notification {} {}".format(obj.id, settings.TOWER_URL_BASE)})
+        msg = "Tower Notification Test {} {}".format(obj.id, settings.TOWER_URL_BASE)
+        if obj.notification_type in ('email', 'pagerduty'):
+            body = "Ansible Tower Test Notification {} {}".format(obj.id, settings.TOWER_URL_BASE)
+        elif obj.notification_type == 'webhook':
+            body = '{{"body": "Ansible Tower Test Notification {} {}"}}'.format(obj.id, settings.TOWER_URL_BASE)
+        else:
+            body = {"body": "Ansible Tower Test Notification {} {}".format(obj.id, settings.TOWER_URL_BASE)}
+        notification = obj.generate_notification(msg, body)
+
         if not notification:
             return Response({}, status=status.HTTP_400_BAD_REQUEST)
         else:
@@ -4408,3 +4525,63 @@ for attr, value in list(locals().items()):
         name = camelcase_to_underscore(attr)
         view = value.as_view()
         setattr(this_module, name, view)
+
+
+class WorkflowApprovalTemplateDetail(RelatedJobsPreventDeleteMixin, RetrieveUpdateDestroyAPIView):
+
+    model = models.WorkflowApprovalTemplate
+    serializer_class = serializers.WorkflowApprovalTemplateSerializer
+
+
+class WorkflowApprovalTemplateJobsList(SubListAPIView):
+
+    model = models.WorkflowApproval
+    serializer_class = serializers.WorkflowApprovalListSerializer
+    parent_model = models.WorkflowApprovalTemplate
+    relationship = 'approvals'
+    parent_key = 'workflow_approval_template'
+
+
+class WorkflowApprovalList(ListCreateAPIView):
+
+    model = models.WorkflowApproval
+    serializer_class = serializers.WorkflowApprovalListSerializer
+
+    def get(self, request, *args, **kwargs):
+        return super(WorkflowApprovalList, self).get(request, *args, **kwargs)
+
+
+class WorkflowApprovalDetail(UnifiedJobDeletionMixin, RetrieveDestroyAPIView):
+
+    model = models.WorkflowApproval
+    serializer_class = serializers.WorkflowApprovalSerializer
+
+
+class WorkflowApprovalApprove(RetrieveAPIView):
+    model = models.WorkflowApproval
+    serializer_class = serializers.WorkflowApprovalViewSerializer
+    permission_classes = (WorkflowApprovalPermission,)
+
+    def post(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if not request.user.can_access(models.WorkflowApproval, 'approve_or_deny', obj):
+            raise PermissionDenied(detail=_("User does not have permission to approve or deny this workflow."))
+        if obj.status != 'pending':
+            return Response({"error": _("This workflow step has already been approved or denied.")}, status=status.HTTP_400_BAD_REQUEST)
+        obj.approve(request)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WorkflowApprovalDeny(RetrieveAPIView):
+    model = models.WorkflowApproval
+    serializer_class = serializers.WorkflowApprovalViewSerializer
+    permission_classes = (WorkflowApprovalPermission,)
+
+    def post(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if not request.user.can_access(models.WorkflowApproval, 'approve_or_deny', obj):
+            raise PermissionDenied(detail=_("User does not have permission to approve or deny this workflow."))
+        if obj.status != 'pending':
+            return Response({"error": _("This workflow step has already been approved or denied.")}, status=status.HTTP_400_BAD_REQUEST)
+        obj.deny(request)
+        return Response(status=status.HTTP_204_NO_CONTENT)

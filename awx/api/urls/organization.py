@@ -15,9 +15,10 @@ from awx.api.views import (
     OrganizationCredentialList,
     OrganizationActivityStreamList,
     OrganizationNotificationTemplatesList,
-    OrganizationNotificationTemplatesAnyList,
     OrganizationNotificationTemplatesErrorList,
+    OrganizationNotificationTemplatesStartedList,
     OrganizationNotificationTemplatesSuccessList,
+    OrganizationNotificationTemplatesApprovalList,
     OrganizationInstanceGroupsList,
     OrganizationObjectRolesList,
     OrganizationAccessList,
@@ -25,7 +26,7 @@ from awx.api.views import (
 )
 
 
-urls = [ 
+urls = [
     url(r'^$', OrganizationList.as_view(), name='organization_list'),
     url(r'^(?P<pk>[0-9]+)/$', OrganizationDetail.as_view(), name='organization_detail'),
     url(r'^(?P<pk>[0-9]+)/users/$', OrganizationUsersList.as_view(), name='organization_users_list'),
@@ -37,12 +38,14 @@ urls = [
     url(r'^(?P<pk>[0-9]+)/credentials/$', OrganizationCredentialList.as_view(), name='organization_credential_list'),
     url(r'^(?P<pk>[0-9]+)/activity_stream/$', OrganizationActivityStreamList.as_view(), name='organization_activity_stream_list'),
     url(r'^(?P<pk>[0-9]+)/notification_templates/$', OrganizationNotificationTemplatesList.as_view(), name='organization_notification_templates_list'),
-    url(r'^(?P<pk>[0-9]+)/notification_templates_any/$', OrganizationNotificationTemplatesAnyList.as_view(),
-        name='organization_notification_templates_any_list'),
+    url(r'^(?P<pk>[0-9]+)/notification_templates_started/$', OrganizationNotificationTemplatesStartedList.as_view(),
+        name='organization_notification_templates_started_list'),
     url(r'^(?P<pk>[0-9]+)/notification_templates_error/$', OrganizationNotificationTemplatesErrorList.as_view(),
         name='organization_notification_templates_error_list'),
     url(r'^(?P<pk>[0-9]+)/notification_templates_success/$', OrganizationNotificationTemplatesSuccessList.as_view(),
         name='organization_notification_templates_success_list'),
+    url(r'^(?P<pk>[0-9]+)/notification_templates_approvals/$', OrganizationNotificationTemplatesApprovalList.as_view(),
+        name='organization_notification_templates_approvals_list'),
     url(r'^(?P<pk>[0-9]+)/instance_groups/$', OrganizationInstanceGroupsList.as_view(), name='organization_instance_groups_list'),
     url(r'^(?P<pk>[0-9]+)/object_roles/$', OrganizationObjectRolesList.as_view(), name='organization_object_roles_list'),
     url(r'^(?P<pk>[0-9]+)/access_list/$', OrganizationAccessList.as_view(), name='organization_access_list'),

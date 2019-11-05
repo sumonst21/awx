@@ -106,6 +106,13 @@ class ProjectOptions(models.Model):
         verbose_name=_('SCM Branch'),
         help_text=_('Specific branch, tag or commit to checkout.'),
     )
+    scm_refspec = models.CharField(
+        max_length=1024,
+        blank=True,
+        default='',
+        verbose_name=_('SCM refspec'),
+        help_text=_('For git projects, an additional refspec to fetch.'),
+    )
     scm_clean = models.BooleanField(
         default=False,
         help_text=_('Discard any local changes before syncing the project.'),
@@ -241,7 +248,7 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
     SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name', 'organization')]
     FIELDS_TO_PRESERVE_AT_COPY = ['labels', 'instance_groups', 'credentials']
     FIELDS_TO_DISCARD_AT_COPY = ['local_path']
-    FIELDS_TRIGGER_UPDATE = frozenset(['scm_url', 'scm_branch', 'scm_type'])
+    FIELDS_TRIGGER_UPDATE = frozenset(['scm_url', 'scm_branch', 'scm_type', 'scm_refspec'])
 
     class Meta:
         app_label = 'main'
@@ -261,8 +268,13 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
     scm_update_cache_timeout = models.PositiveIntegerField(
         default=0,
         blank=True,
-        help_text=_('The number of seconds after the last project update ran that a new'
+        help_text=_('The number of seconds after the last project update ran that a new '
                     'project update will be launched as a job dependency.'),
+    )
+    allow_override = models.BooleanField(
+        default=False,
+        help_text=_('Allow changing the SCM branch or revision in a job template '
+                    'that uses this project.'),
     )
 
     scm_revision = models.CharField(
@@ -317,7 +329,7 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
     @classmethod
     def _get_unified_job_field_names(cls):
         return set(f.name for f in ProjectOptions._meta.fields) | set(
-            ['name', 'description', 'schedule']
+            ['name', 'description']
         )
 
     def save(self, *args, **kwargs):
@@ -411,24 +423,24 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
         base_notification_templates = NotificationTemplate.objects
         error_notification_templates = list(base_notification_templates
                                             .filter(unifiedjobtemplate_notification_templates_for_errors=self))
+        started_notification_templates = list(base_notification_templates
+                                              .filter(unifiedjobtemplate_notification_templates_for_started=self))
         success_notification_templates = list(base_notification_templates
                                               .filter(unifiedjobtemplate_notification_templates_for_success=self))
-        any_notification_templates = list(base_notification_templates
-                                          .filter(unifiedjobtemplate_notification_templates_for_any=self))
         # Get Organization NotificationTemplates
         if self.organization is not None:
             error_notification_templates = set(error_notification_templates +
                                                list(base_notification_templates
                                                     .filter(organization_notification_templates_for_errors=self.organization)))
+            started_notification_templates = set(started_notification_templates +
+                                                 list(base_notification_templates
+                                                      .filter(organization_notification_templates_for_started=self.organization)))
             success_notification_templates = set(success_notification_templates +
                                                  list(base_notification_templates
                                                       .filter(organization_notification_templates_for_success=self.organization)))
-            any_notification_templates = set(any_notification_templates +
-                                             list(base_notification_templates
-                                                  .filter(organization_notification_templates_for_any=self.organization)))
         return dict(error=list(error_notification_templates),
-                    success=list(success_notification_templates),
-                    any=list(any_notification_templates))
+                    started=list(started_notification_templates),
+                    success=list(success_notification_templates))
 
     def get_absolute_url(self, request=None):
         return reverse('api:project_detail', kwargs={'pk': self.pk}, request=request)
@@ -470,6 +482,14 @@ class ProjectUpdate(UnifiedJob, ProjectOptions, JobNotificationMixin, TaskManage
         max_length=64,
         choices=PROJECT_UPDATE_JOB_TYPE_CHOICES,
         default='check',
+    )
+    scm_revision = models.CharField(
+        max_length=1024,
+        blank=True,
+        default='',
+        editable=False,
+        verbose_name=_('SCM Revision'),
+        help_text=_('The SCM Revision discovered by this update for the given project and branch.'),
     )
 
     def _get_parent_field_name(self):
@@ -567,5 +587,3 @@ class ProjectUpdate(UnifiedJob, ProjectOptions, JobNotificationMixin, TaskManage
         if not selected_groups:
             return self.global_instance_groups
         return selected_groups
-
-

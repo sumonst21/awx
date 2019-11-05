@@ -150,6 +150,14 @@ class AdHocCommand(UnifiedJob, JobNotificationMixin):
     def supports_isolation(cls):
         return True
 
+    @property
+    def is_containerized(self):
+        return bool(self.instance_group and self.instance_group.is_containerized)
+
+    @property
+    def can_run_containerized(self):
+        return True
+
     def get_absolute_url(self, request=None):
         return reverse('api:ad_hoc_command_detail', kwargs={'pk': self.pk}, request=request)
 
@@ -163,18 +171,18 @@ class AdHocCommand(UnifiedJob, JobNotificationMixin):
             all_orgs.add(h.inventory.organization)
         active_templates = dict(error=set(),
                                 success=set(),
-                                any=set())
+                                started=set())
         base_notification_templates = NotificationTemplate.objects
         for org in all_orgs:
             for templ in base_notification_templates.filter(organization_notification_templates_for_errors=org):
                 active_templates['error'].add(templ)
             for templ in base_notification_templates.filter(organization_notification_templates_for_success=org):
                 active_templates['success'].add(templ)
-            for templ in base_notification_templates.filter(organization_notification_templates_for_any=org):
-                active_templates['any'].add(templ)
+            for templ in base_notification_templates.filter(organization_notification_templates_for_started=org):
+                active_templates['started'].add(templ)
         active_templates['error'] = list(active_templates['error'])
-        active_templates['any'] = list(active_templates['any'])
         active_templates['success'] = list(active_templates['success'])
+        active_templates['started'] = list(active_templates['started'])
         return active_templates
 
     def get_passwords_needed_to_start(self):

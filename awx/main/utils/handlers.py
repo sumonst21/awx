@@ -6,6 +6,7 @@ import logging
 import json
 import requests
 import time
+import threading
 import socket
 import select
 from urllib import parse as urlparse
@@ -286,11 +287,31 @@ class AWXProxyHandler(logging.Handler):
     Parameters match same parameters in the actualized handler classes.
     '''
 
+    thread_local = threading.local()
+    _auditor = None
+
     def __init__(self, **kwargs):
         # TODO: process 'level' kwarg
         super(AWXProxyHandler, self).__init__(**kwargs)
         self._handler = None
         self._old_kwargs = {}
+
+    @property
+    def auditor(self):
+        if not self._auditor:
+            self._auditor = logging.handlers.RotatingFileHandler(
+                filename='/var/log/tower/external.log',
+                maxBytes=1024 * 1024 * 50, # 50 MB
+                backupCount=5,
+            )
+
+            class WritableLogstashFormatter(LogstashFormatter):
+                @classmethod
+                def serialize(cls, message):
+                    return json.dumps(message)
+
+            self._auditor.setFormatter(WritableLogstashFormatter())
+        return self._auditor
 
     def get_handler_class(self, protocol):
         return HANDLER_MAPPING.get(protocol, AWXNullHandler)
@@ -322,8 +343,12 @@ class AWXProxyHandler(logging.Handler):
         return self._handler
 
     def emit(self, record):
-        actual_handler = self.get_handler()
-        return actual_handler.emit(record)
+        if AWXProxyHandler.thread_local.enabled:
+            actual_handler = self.get_handler()
+            if settings.LOG_AGGREGATOR_AUDIT:
+                self.auditor.setLevel(settings.LOG_AGGREGATOR_LEVEL)
+                self.auditor.emit(record)
+            return actual_handler.emit(record)
 
     def perform_test(self, custom_settings):
         """
@@ -352,6 +377,13 @@ class AWXProxyHandler(logging.Handler):
                         )
             except RequestException as e:
                 raise LoggingConnectivityException(str(e))
+
+    @classmethod
+    def disable(cls):
+        cls.thread_local.enabled = False
+
+
+AWXProxyHandler.thread_local.enabled = True
 
 
 ColorHandler = logging.StreamHandler
